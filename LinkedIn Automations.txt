@@ -1,0 +1,1259 @@
+{
+"workflow\_overview": "Automates personal LinkedIn posting for a civil engineering / PMC (redevelopment) brand. On Tue/Thu 9:00 AM IST, fetch the next queued post from Google Sheets or Airtable, optionally pull an image from Google Drive, intelligently assemble the caption with domain hashtags (#CivilEngineering, #ProjectManagement, #Redevelopment, #Infrastructure, #ConstructionManagement), and publish via LinkedIn OAuth2. Success updates the source row/record and logs. Errors are trapped by Error Trigger → Slack + Email + Sheet log. All secrets via credentials or environment variables.",
+"n8n\_node\_structure": \[
+"Cron Trigger (Tue/Thu 9:00 IST)",
+"Set Context",
+"Source Switch",
+"Fetch Sheet Rows",
+"Fetch Airtable Records",
+"Normalize Records",
+"Select Next Item",
+"Assemble Hashtags",
+"Compose Post",
+"Switch Content Type",
+"Drive: Search Image",
+"Drive: Download Image",
+"LinkedIn: Post Text",
+"LinkedIn: Post Article",
+"LinkedIn: Post Image",
+"Update Source (Sheets)",
+"Update Source (Airtable)",
+"Log Success (Sheets)",
+"Slack: Success",
+"Error Trigger",
+"Set Error Context",
+"Slack: Error Alert",
+"Email: Error Alert",
+"Log Error (Sheets)"
+],
+"detailed\_node\_configuration": \[
+{
+"node\_name": "Cron Trigger (Tue/Thu 9:00 IST)",
+"configuration": {
+"type": "n8n-nodes-base.cron",
+"parameters": {
+"mode": "everyWeek",
+"weekly": {
+"days": \[
+"tuesday",
+"thursday"
+],
+"hour": 9,
+"minute": 0
+}
+}
+}
+},
+{
+"node\_name": "Set Context",
+"configuration": {
+"type": "n8n-nodes-base.set",
+"parameters": {
+"keepOnlySet": true,
+"values": {
+"string": \[
+{ "name": "source", "value": "={{\$env.CONTENT\_SOURCE || 'sheets'}}" },
+{ "name": "sheetDocId", "value": "={{\$env.GSHEET\_DOC\_ID}}" },
+{ "name": "sheetRange", "value": "={{\$env.GSHEET\_RANGE || 'Content!A\:Z'}}" },
+{ "name": "airtableBaseId", "value": "={{\$env.AIRTABLE\_BASE\_ID}}" },
+{ "name": "airtableTable", "value": "={{\$env.AIRTABLE\_TABLE || 'LinkedInContent'}}" },
+{ "name": "imageFolderId", "value": "={{\$env.DRIVE\_IMAGE\_FOLDER\_ID}}" },
+{ "name": "defaultHashtags", "value": "#CivilEngineering #ProjectManagement #Redevelopment #Infrastructure #ConstructionManagement" },
+{ "name": "linkedinProfileUrn", "value": "={{\$env.LINKEDIN\_PERSON\_URN}}"},
+{ "name": "linkedinOrgUrn", "value": "={{\$env.LINKEDIN\_ORG\_URN || ''}}"},
+{ "name": "postAs", "value": "={{\$env.LINKEDIN\_POST\_AS || 'personal'}}"},
+{ "name": "logSheetRange", "value": "={{\$env.GSHEET\_LOG\_RANGE || 'Logs!A\:Z'}}" }
+]
+}
+},
+"notes": "Config via env. CONTENT\_SOURCE: sheets|airtable"
+},
+"example\_payload": {
+"source": "sheets",
+"sheetDocId": "1Abc...DocId",
+"sheetRange": "Content!A\:Z",
+"airtableBaseId": "appXXXX",
+"airtableTable": "LinkedInContent",
+"imageFolderId": "DriveFolderId",
+"defaultHashtags": "#CivilEngineering #ProjectManagement #Redevelopment #Infrastructure #ConstructionManagement",
+"linkedinProfileUrn": "urn\:li\:person\:XXXX",
+"linkedinOrgUrn": "",
+"postAs": "personal",
+"logSheetRange": "Logs!A\:Z"
+}
+},
+{
+"node\_name": "Source Switch",
+"configuration": {
+"type": "n8n-nodes-base.switch",
+"parameters": {
+"propertyName": "source",
+"dataType": "string",
+"rules": \[
+{ "operation": "equal", "value": "sheets" },
+{ "operation": "equal", "value": "airtable" }
+]
+}
+}
+},
+{
+"node\_name": "Fetch Sheet Rows",
+"configuration": {
+"type": "n8n-nodes-base.googleSheets",
+"configuration": "Read rows from Google Sheets. Expected columns: Status, Scheduled Date, Content Type, Post Text, Article URL, Image File Name, Image File ID, Hashtags, RowId (if maintained).",
+"parameters": {
+"operation": "read",
+"sheetId": "={{\$json.sheetDocId}}",
+"range": "={{\$json.sheetRange}}",
+"options": {
+"valueRenderMode": "UNFORMATTED\_VALUE",
+"dateTimeRenderOption": "FORMATTED\_STRING"
+}
+}
+},
+"example\_payload": \[
+{
+"Status": "Queued",
+"Scheduled Date": "2025-08-26",
+"Content Type": "article",
+"Post Text": "5 planning mistakes in MHADA redevelopment & how to avoid them.",
+"Article URL": "[https://example.com/mhada-redevelopment-guide](https://example.com/mhada-redevelopment-guide)",
+"Image File Name": "mhada\_guide.png",
+"Image File ID": "",
+"Hashtags": "#MHADA #Redevelopment",
+"RowId": "42"
+}
+]
+},
+{
+"node\_name": "Fetch Airtable Records",
+"configuration": {
+"type": "n8n-nodes-base.airtable",
+"configuration": "List records from Airtable table. Fields: Status, Scheduled Date, Content Type, Post Text, Article URL, Image File Name, Image File ID, Hashtags",
+"parameters": {
+"operation": "list",
+"baseId": "={{\$json.airtableBaseId}}",
+"table": "={{\$json.airtableTable}}",
+"additionalFields": {
+"filterByFormula": "AND({Status}='Queued', OR({Scheduled Date}='', IS\_BEFORE({Scheduled Date}, NOW()), IS\_SAME({Scheduled Date}, TODAY())))",
+"sort": \[
+{ "field": "Scheduled Date", "direction": "asc" }
+],
+"maxRecords": 10
+}
+}
+}
+},
+{
+"node\_name": "Normalize Records",
+"configuration": {
+"type": "n8n-nodes-base.function",
+"parameters": {
+"functionCode": "const src = \$json.source || 'sheets';\nconst out = \[];\nfor (const item of items) {\n  const r = item.json;\n  const row = {};\n  // Sheets style keys or Airtable fields\n  row\.source = src;\n  row\.status = r.Status || r\['Status'] || '';\n  row\.scheduled\_date = r\['Scheduled Date'] || r\['Scheduled Date (ISO)'] || '';\n  row\.content\_type = (r\['Content Type'] || r.ContentType || 'text').toLowerCase();\n  row\.post\_text = r\['Post Text'] || r.Post || '';\n  row\.article\_url = r\['Article URL'] || r.ArticleURL || '';\n  row\.image\_name = r\['Image File Name'] || r.ImageName || '';\n  row\.image\_file\_id = r\['Image File ID'] || r.ImageFileId || '';\n  row\.hashtags = r\['Hashtags'] || r.Hashtags || '';\n  row.\_rowId = r\['RowId'] || r.RowId || r.id || '';\n  out.push({ json: row });\n}\nreturn out;"
+}
+}
+},
+{
+"node\_name": "Select Next Item",
+"configuration": {
+"type": "n8n-nodes-base.function",
+"parameters": {
+"functionCode": "if (items.length === 0) {\n  throw new Error('No queued content to post');\n}\n// Pick first eligible\nreturn \[items\[0]];"
+}
+}
+},
+{
+"node\_name": "Assemble Hashtags",
+"configuration": {
+"type": "n8n-nodes-base.function",
+"parameters": {
+"functionCode": "const defaults = (\$json.defaultHashtags || '').split(/\s+/).filter(Boolean);\nconst provided = (\$json.hashtags || '').split(/\s+/).filter(Boolean);\nconst set = new Set();\nfor (const h of \[...defaults, ...provided]) {\n  let t = h.trim();\n  if (!t) continue;\n  if (!t.startsWith('#')) t = '#' + t.replace(/\s+/g,'');\n  set.add(t);\n}\nconst hashtags = Array.from(set).join(' ').trim();\nreturn \[{ json: { ...\$json, final\_hashtags: hashtags } }];"
+}
+}
+},
+{
+"node\_name": "Compose Post",
+"configuration": {
+"type": "n8n-nodes-base.function",
+"parameters": {
+"functionCode": "function trimToLen(s, n){return (s||'').length>n ? (s||'').slice(0,n-1)+'…' : (s||'')}\nconst body = \[\$json.post\_text || '', '', \$json.final\_hashtags || ''].join('\n').trim();\nconst text = trimToLen(body, 2900);\nreturn \[{ json: { ...\$json, post\_text\_final: text } }];"
+}
+}
+},
+{
+"node\_name": "Switch Content Type",
+"configuration": {
+"type": "n8n-nodes-base.switch",
+"parameters": {
+"propertyName": "content\_type",
+"dataType": "string",
+"rules": \[
+{ "operation": "equal", "value": "image" },
+{ "operation": "equal", "value": "article" }
+]
+}
+}
+},
+{
+"node\_name": "Drive: Search Image",
+"configuration": {
+"type": "n8n-nodes-base.googleDrive",
+"parameters": {
+"operation": "list",
+"filters": {
+"query": "={{'"' + \$json.image\_name + '" in name and \\'' + \$json.imageFolderId + '\\' in parents and trashed = false'}}",
+"pageSize": 1
+}
+}
+}
+},
+{
+"node\_name": "Drive: Download Image",
+"configuration": {
+"type": "n8n-nodes-base.googleDrive",
+"parameters": {
+"operation": "download",
+"fileId": "={{\$json.image\_file\_id || \$item(0, 'Drive: Search Image').json.files?.\[0]?.id}}",
+"options": {
+"binaryPropertyName": "image"
+}
+}
+}
+},
+{
+"node\_name": "LinkedIn: Post Text",
+"configuration": {
+"type": "n8n-nodes-base.linkedIn",
+"parameters": {
+"resource": "post",
+"operation": "create",
+"postAs": "={{\$json.postAs}}",
+"person": {
+"personId": "={{\$json.linkedinProfileUrn}}"
+},
+"organization": {
+"organizationId": "={{\$json.linkedinOrgUrn}}"
+},
+"text": "={{\$json.post\_text\_final}}"
+}
+},
+"example\_payload": {
+"text": "Top 3 mistakes in society redevelopment planning… #CivilEngineering #ProjectManagement #Redevelopment #Infrastructure #ConstructionManagement"
+}
+},
+{
+"node\_name": "LinkedIn: Post Article",
+"configuration": {
+"type": "n8n-nodes-base.linkedIn",
+"parameters": {
+"resource": "post",
+"operation": "create",
+"postAs": "={{\$json.postAs}}",
+"person": {
+"personId": "={{\$json.linkedinProfileUrn}}"
+},
+"organization": {
+"organizationId": "={{\$json.linkedinOrgUrn}}"
+},
+"text": "={{\$json.post\_text\_final}}",
+"content": {
+"shareMediaCategory": "ARTICLE",
+"article": {
+"link": "={{\$json.article\_url}}"
+}
+}
+}
+}
+},
+{
+"node\_name": "LinkedIn: Post Image",
+"configuration": {
+"type": "n8n-nodes-base.linkedIn",
+"parameters": {
+"resource": "post",
+"operation": "create",
+"postAs": "={{\$json.postAs}}",
+"person": {
+"personId": "={{\$json.linkedinProfileUrn}}"
+},
+"organization": {
+"organizationId": "={{\$json.linkedinOrgUrn}}"
+},
+"text": "={{\$json.post\_text\_final}}",
+"additionalFields": {
+"binaryPropertyName": "image"
+}
+}
+}
+},
+{
+"node\_name": "Update Source (Sheets)",
+"configuration": {
+"type": "n8n-nodes-base.googleSheets",
+"parameters": {
+"operation": "append",
+"sheetId": "={{\$json.sheetDocId}}",
+"range": "={{\$json.logSheetRange}}",
+"options": {
+"valueInputMode": "RAW"
+},
+"data": "={{\[{ Timestamp:(new Date()).toISOString(), Source:'Sheets', RowId:\$json.\_rowId, Status:'Posted', LinkedInURN:\$json.linkedInUrn || '' }]}}"
+},
+"notes": "Using append to Logs sheet; if you maintain a Status column in source, add a separate update node to write back Posted status."
+}
+},
+{
+"node\_name": "Update Source (Airtable)",
+"configuration": {
+"type": "n8n-nodes-base.airtable",
+"parameters": {
+"operation": "update",
+"baseId": "={{\$json.airtableBaseId}}",
+"table": "={{\$json.airtableTable}}",
+"id": "={{\$json.\_rowId}}",
+"fields": {
+"Status": "Posted",
+"Posted At": "={{(new Date()).toISOString()}}",
+"LinkedIn URN": "={{\$json.linkedInUrn || ''}}"
+}
+}
+}
+},
+{
+"node\_name": "Log Success (Sheets)",
+"configuration": {
+"type": "n8n-nodes-base.googleSheets",
+"parameters": {
+"operation": "append",
+"sheetId": "={{\$json.sheetDocId}}",
+"range": "={{\$json.logSheetRange}}",
+"options": {
+"valueInputMode": "RAW"
+},
+"data": "={{\[{ Timestamp:(new Date()).toISOString(), Level:'INFO', Message:'LinkedIn post successful', ContentType:\$json.content\_type, Source:\$json.source, RowOrRecord:\$json.\_rowId, LinkedInURN:\$json.linkedInUrn || '' }]}}"
+}
+}
+},
+{
+"node\_name": "Slack: Success",
+"configuration": {
+"type": "n8n-nodes-base.slack",
+"parameters": {
+"operation": "post",
+"channel": "={{\$env.ALERT\_SLACK\_CHANNEL || '#alerts'}}",
+"text": "={{'✅ LinkedIn post OK | ' + (\$json.content\_type || 'text') + ' | ' + (\$json.\_rowId || '')}}"
+}
+}
+},
+{
+"node\_name": "Error Trigger",
+"configuration": {
+"type": "n8n-nodes-base.errorTrigger",
+"parameters": {}
+}
+},
+{
+"node\_name": "Set Error Context",
+"configuration": {
+"type": "n8n-nodes-base.function",
+"parameters": {
+"functionCode": "const err = \$json;\nreturn \[{ json: { timestamp: new Date().toISOString(), level: 'ERROR', message: err.execution?.error?.message || 'Workflow error', stack: err.execution?.error?.stack || '', node: err.execution?.error?.node?.name || '', runId: err.execution?.id || '' } }];"
+}
+}
+},
+{
+"node\_name": "Slack: Error Alert",
+"configuration": {
+"type": "n8n-nodes-base.slack",
+"parameters": {
+"operation": "post",
+"channel": "={{\$env.ALERT\_SLACK\_CHANNEL || '#alerts'}}",
+"text": "={{'🚨 LinkedIn workflow ERROR at ' + \$json.node + ' → ' + \$json.message}}"
+}
+}
+},
+{
+"node\_name": "Email: Error Alert",
+"configuration": {
+"type": "n8n-nodes-base.emailSend",
+"parameters": {
+"fromEmail": "={{\$env.ALERT\_FROM\_EMAIL}}",
+"toEmail": "={{\$env.ALERT\_TO\_EMAIL}}",
+"subject": "n8n LinkedIn Automation Error",
+"text": "={{'Error at node: ' + \$json.node + '\nMessage: ' + \$json.message + '\nRun ID: ' + \$json.runId}}"
+}
+}
+},
+{
+"node\_name": "Log Error (Sheets)",
+"configuration": {
+"type": "n8n-nodes-base.googleSheets",
+"parameters": {
+"operation": "append",
+"sheetId": "={{\$env.GSHEET\_DOC\_ID}}",
+"range": "={{\$env.GSHEET\_LOG\_RANGE || 'Logs!A\:Z'}}",
+"options": {
+"valueInputMode": "RAW"
+},
+"data": "={{\[{ Timestamp:\$json.timestamp, Level:\$json.level, Message:\$json.message, Node:\$json.node, RunId:\$json.runId }]}}"
+}
+}
+}
+],
+"setup\_instructions": \[
+"Create credentials in n8n: Google Sheets OAuth2, Google Drive OAuth2, Airtable API (Personal Access Token), LinkedIn OAuth2, Slack Bot, SMTP/Email.",
+"Create a Google Sheet with a tab named 'Content' (or set GSHEET\_RANGE). Columns: Status, Scheduled Date, Content Type, Post Text, Article URL, Image File Name, Image File ID, Hashtags, RowId.",
+"Optionally create an Airtable base/table with equivalent fields. Set CONTENT\_SOURCE env to 'airtable' to use Airtable.",
+"Create a Logs tab in the same Google Sheet (or set GSHEET\_LOG\_RANGE) for log appends.",
+"Store images in a Google Drive folder and set DRIVE\_IMAGE\_FOLDER\_ID. Reference images by file name or file ID in the sheet/base.",
+"Set env vars: CONTENT\_SOURCE, GSHEET\_DOC\_ID, GSHEET\_RANGE, GSHEET\_LOG\_RANGE, AIRTABLE\_BASE\_ID, AIRTABLE\_TABLE, DRIVE\_IMAGE\_FOLDER\_ID, LINKEDIN\_PERSON\_URN, LINKEDIN\_ORG\_URN (if posting as org), LINKEDIN\_POST\_AS ('personal'|'organization'), ALERT\_SLACK\_CHANNEL, ALERT\_FROM\_EMAIL, ALERT\_TO\_EMAIL.",
+"Map each node to the proper credential in the workflow after import.",
+"Ensure LinkedIn app scopes allow creating posts (w\_member\_social / openid / profile scopes as applicable).",
+"Test with a dummy row/record (Status='Queued', Scheduled Date today or earlier)."
+],
+"best\_practices\_and\_tips": \[
+"Keep captions < 2900 chars; Function node trims.",
+"Use RowId (Sheets) or record id (Airtable) to track updates and avoid double-posting.",
+"Include content\_type per item: 'text', 'image', or 'article'.",
+"Prefer Image File ID over name for Drive download reliability.",
+"Use Logs sheet to audit success/error events; consider exporting logs weekly.",
+"Enable workflow concurrency = 1 to avoid duplicate posts.",
+"If posting as organization, set LINKEDIN\_POST\_AS='organization' and LINKEDIN\_ORG\_URN.",
+"Stagger content in the calendar to avoid LinkedIn rate limits; this flow posts one item per run.",
+"Lock down credentials; keep secrets out of sheets/bases.",
+"Create a dry-run path (replace LinkedIn nodes with Slack post) when testing."
+],
+"name": "LinkedIn Brand Automation (Civil Eng / PMC)",
+"nodes": \[
+{
+"parameters": {
+"mode": "everyWeek",
+"weekly": {
+"days": \[
+"tuesday",
+"thursday"
+],
+"hour": 9,
+"minute": 0
+}
+},
+"id": "Cron1",
+"name": "Cron Trigger (Tue/Thu 9:00 IST)",
+"type": "n8n-nodes-base.cron",
+"typeVersion": 1,
+"position": \[
+200,
+200
+]
+},
+{
+"parameters": {
+"keepOnlySet": true,
+"values": {
+"string": \[
+{ "name": "source", "value": "={{\$env.CONTENT\_SOURCE || 'sheets'}}" },
+{ "name": "sheetDocId", "value": "={{\$env.GSHEET\_DOC\_ID}}"},
+{ "name": "sheetRange", "value": "={{\$env.GSHEET\_RANGE || 'Content!A\:Z'}}"},
+{ "name": "airtableBaseId", "value": "={{\$env.AIRTABLE\_BASE\_ID}}"},
+{ "name": "airtableTable", "value": "={{\$env.AIRTABLE\_TABLE || 'LinkedInContent'}}"},
+{ "name": "imageFolderId", "value": "={{\$env.DRIVE\_IMAGE\_FOLDER\_ID}}"},
+{ "name": "defaultHashtags", "value": "#CivilEngineering #ProjectManagement #Redevelopment #Infrastructure #ConstructionManagement" },
+{ "name": "linkedinProfileUrn", "value": "={{\$env.LINKEDIN\_PERSON\_URN}}"},
+{ "name": "linkedinOrgUrn", "value": "={{\$env.LINKEDIN\_ORG\_URN || ''}}"},
+{ "name": "postAs", "value": "={{\$env.LINKEDIN\_POST\_AS || 'personal'}}"},
+{ "name": "logSheetRange", "value": "={{\$env.GSHEET\_LOG\_RANGE || 'Logs!A\:Z'}}" }
+]
+}
+},
+"id": "SetContext",
+"name": "Set Context",
+"type": "n8n-nodes-base.set",
+"typeVersion": 2,
+"position": \[
+450,
+200
+]
+},
+{
+"parameters": {
+"propertyName": "source",
+"dataType": "string",
+"rules": \[
+{ "operation": "equal", "value": "sheets" },
+{ "operation": "equal", "value": "airtable" }
+]
+},
+"id": "SwitchSource",
+"name": "Source Switch",
+"type": "n8n-nodes-base.switch",
+"typeVersion": 2,
+"position": \[
+700,
+200
+]
+},
+{
+"parameters": {
+"operation": "read",
+"sheetId": "={{\$json.sheetDocId}}",
+"range": "={{\$json.sheetRange}}",
+"options": {
+"valueRenderMode": "UNFORMATTED\_VALUE",
+"dateTimeRenderOption": "FORMATTED\_STRING"
+}
+},
+"id": "GSheetsRead",
+"name": "Fetch Sheet Rows",
+"type": "n8n-nodes-base.googleSheets",
+"typeVersion": 4,
+"position": \[
+950,
+80
+],
+"credentials": {
+"googleSheetsOAuth2Api": {
+"id": "google-sheets-oauth2",
+"name": "Google Sheets OAuth2"
+}
+}
+},
+{
+"parameters": {
+"operation": "list",
+"baseId": "={{\$json.airtableBaseId}}",
+"table": "={{\$json.airtableTable}}",
+"additionalFields": {
+"filterByFormula": "AND({Status}='Queued', OR({Scheduled Date}='', IS\_BEFORE({Scheduled Date}, NOW()), IS\_SAME({Scheduled Date}, TODAY())))",
+"sort": \[
+{ "field": "Scheduled Date", "direction": "asc" }
+],
+"maxRecords": 10
+}
+},
+"id": "AirtableList",
+"name": "Fetch Airtable Records",
+"type": "n8n-nodes-base.airtable",
+"typeVersion": 3,
+"position": \[
+950,
+320
+],
+"credentials": {
+"airtableApi": {
+"id": "airtable-api",
+"name": "Airtable API"
+}
+}
+},
+{
+"parameters": {
+"functionCode": "const src = \$json.source || 'sheets';\nconst out = \[];\nfor (const item of items) {\n  const r = item.json;\n  const row = {};\n  row\.source = src;\n  row\.status = r.Status || r\['Status'] || '';\n  row\.scheduled\_date = r\['Scheduled Date'] || r\['Scheduled Date (ISO)'] || '';\n  row\.content\_type = (r\['Content Type'] || r.ContentType || 'text').toLowerCase();\n  row\.post\_text = r\['Post Text'] || r.Post || '';\n  row\.article\_url = r\['Article URL'] || r.ArticleURL || '';\n  row\.image\_name = r\['Image File Name'] || r.ImageName || '';\n  row\.image\_file\_id = r\['Image File ID'] || r.ImageFileId || '';\n  row\.hashtags = r\['Hashtags'] || r.Hashtags || '';\n  row.\_rowId = r\['RowId'] || r.RowId || r.id || '';\n  out.push({ json: row });\n}\nreturn out;"
+},
+"id": "Normalize",
+"name": "Normalize Records",
+"type": "n8n-nodes-base.function",
+"typeVersion": 2,
+"position": \[
+1200,
+200
+]
+},
+{
+"parameters": {
+"functionCode": "if (items.length === 0) {\n  throw new Error('No queued content to post');\n}\nreturn \[items\[0]];"
+},
+"id": "PickOne",
+"name": "Select Next Item",
+"type": "n8n-nodes-base.function",
+"typeVersion": 2,
+"position": \[
+1450,
+200
+]
+},
+{
+"parameters": {
+"functionCode": "const defaults = (\$json.defaultHashtags || '').split(/\s+/).filter(Boolean);\nconst provided = (\$json.hashtags || '').split(/\s+/).filter(Boolean);\nconst set = new Set();\nfor (const h of \[...defaults, ...provided]) { let t = (h||'').trim(); if (!t) continue; if (!t.startsWith('#')) t = '#' + t.replace(/\s+/g,''); set.add(t); }\nconst hashtags = Array.from(set).join(' ').trim();\nreturn \[{ json: { ...\$json, final\_hashtags: hashtags } }];"
+},
+"id": "AssembleHashtags",
+"name": "Assemble Hashtags",
+"type": "n8n-nodes-base.function",
+"typeVersion": 2,
+"position": \[
+1700,
+200
+]
+},
+{
+"parameters": {
+"functionCode": "function trimToLen(s, n){return (s||'').length>n ? (s||'').slice(0,n-1)+'…' : (s||'')}\nconst body = \[\$json.post\_text || '', '', \$json.final\_hashtags || ''].join('\n').trim();\nconst text = trimToLen(body, 2900);\nreturn \[{ json: { ...\$json, post\_text\_final: text } }];"
+},
+"id": "ComposePost",
+"name": "Compose Post",
+"type": "n8n-nodes-base.function",
+"typeVersion": 2,
+"position": \[
+1950,
+200
+]
+},
+{
+"parameters": {
+"propertyName": "content\_type",
+"dataType": "string",
+"rules": \[
+{ "operation": "equal", "value": "image" },
+{ "operation": "equal", "value": "article" }
+]
+},
+"id": "SwitchType",
+"name": "Switch Content Type",
+"type": "n8n-nodes-base.switch",
+"typeVersion": 2,
+"position": \[
+2200,
+200
+]
+},
+{
+"parameters": {
+"operation": "list",
+"filters": {
+"query": "={{'name = \\'' + \$json.image\_name + '\\' and \\'' + \$json.imageFolderId + '\\' in parents and trashed = false'}}",
+"pageSize": 1
+}
+},
+"id": "DriveSearch",
+"name": "Drive: Search Image",
+"type": "n8n-nodes-base.googleDrive",
+"typeVersion": 4,
+"position": \[
+2450,
+40
+],
+"credentials": {
+"googleDriveOAuth2Api": {
+"id": "google-drive-oauth2",
+"name": "Google Drive OAuth2"
+}
+}
+},
+{
+"parameters": {
+"operation": "download",
+"fileId": "={{\$json.image\_file\_id || \$item(0, 'Drive: Search Image').json.files?.\[0]?.id}}",
+"options": {
+"binaryPropertyName": "image"
+}
+},
+"id": "DriveDownload",
+"name": "Drive: Download Image",
+"type": "n8n-nodes-base.googleDrive",
+"typeVersion": 4,
+"position": \[
+2700,
+40
+],
+"credentials": {
+"googleDriveOAuth2Api": {
+"id": "google-drive-oauth2",
+"name": "Google Drive OAuth2"
+}
+}
+},
+{
+"parameters": {
+"resource": "post",
+"operation": "create",
+"postAs": "={{\$json.postAs}}",
+"person": {
+"personId": "={{\$json.linkedinProfileUrn}}"
+},
+"organization": {
+"organizationId": "={{\$json.linkedinOrgUrn}}"
+},
+"text": "={{\$json.post\_text\_final}}"
+},
+"id": "LinkedInText",
+"name": "LinkedIn: Post Text",
+"type": "n8n-nodes-base.linkedIn",
+"typeVersion": 2,
+"position": \[
+2450,
+200
+],
+"credentials": {
+"linkedInOAuth2Api": {
+"id": "linkedin-oauth2",
+"name": "LinkedIn OAuth2"
+}
+}
+},
+{
+"parameters": {
+"resource": "post",
+"operation": "create",
+"postAs": "={{\$json.postAs}}",
+"person": {
+"personId": "={{\$json.linkedinProfileUrn}}"
+},
+"organization": {
+"organizationId": "={{\$json.linkedinOrgUrn}}"
+},
+"text": "={{\$json.post\_text\_final}}",
+"content": {
+"shareMediaCategory": "ARTICLE",
+"article": {
+"link": "={{\$json.article\_url}}"
+}
+}
+},
+"id": "LinkedInArticle",
+"name": "LinkedIn: Post Article",
+"type": "n8n-nodes-base.linkedIn",
+"typeVersion": 2,
+"position": \[
+2450,
+340
+],
+"credentials": {
+"linkedInOAuth2Api": {
+"id": "linkedin-oauth2",
+"name": "LinkedIn OAuth2"
+}
+}
+},
+{
+"parameters": {
+"resource": "post",
+"operation": "create",
+"postAs": "={{\$json.postAs}}",
+"person": {
+"personId": "={{\$json.linkedinProfileUrn}}"
+},
+"organization": {
+"organizationId": "={{\$json.linkedinOrgUrn}}"
+},
+"text": "={{\$json.post\_text\_final}}",
+"additionalFields": {
+"binaryPropertyName": "image"
+}
+},
+"id": "LinkedInImage",
+"name": "LinkedIn: Post Image",
+"type": "n8n-nodes-base.linkedIn",
+"typeVersion": 2,
+"position": \[
+2950,
+40
+],
+"credentials": {
+"linkedInOAuth2Api": {
+"id": "linkedin-oauth2",
+"name": "LinkedIn OAuth2"
+}
+}
+},
+{
+"parameters": {
+"operation": "append",
+"sheetId": "={{\$json.sheetDocId}}",
+"range": "={{\$json.logSheetRange}}",
+"options": {
+"valueInputMode": "RAW"
+},
+"data": "={{\[{ Timestamp:(new Date()).toISOString(), Source:'Sheets', RowId:\$json.\_rowId, Status:'Posted', LinkedInURN:\$json.linkedInUrn || '' }]}}"
+},
+"id": "UpdateSheets",
+"name": "Update Source (Sheets)",
+"type": "n8n-nodes-base.googleSheets",
+"typeVersion": 4,
+"position": \[
+3200,
+200
+],
+"credentials": {
+"googleSheetsOAuth2Api": {
+"id": "google-sheets-oauth2",
+"name": "Google Sheets OAuth2"
+}
+}
+},
+{
+"parameters": {
+"operation": "update",
+"baseId": "={{\$json.airtableBaseId}}",
+"table": "={{\$json.airtableTable}}",
+"id": "={{\$json.\_rowId}}",
+"fields": {
+"Status": "Posted",
+"Posted At": "={{(new Date()).toISOString()}}",
+"LinkedIn URN": "={{\$json.linkedInUrn || ''}}"
+}
+},
+"id": "UpdateAirtable",
+"name": "Update Source (Airtable)",
+"type": "n8n-nodes-base.airtable",
+"typeVersion": 3,
+"position": \[
+3200,
+340
+],
+"credentials": {
+"airtableApi": {
+"id": "airtable-api",
+"name": "Airtable API"
+}
+}
+},
+{
+"parameters": {
+"operation": "append",
+"sheetId": "={{\$json.sheetDocId}}",
+"range": "={{\$json.logSheetRange}}",
+"options": {
+"valueInputMode": "RAW"
+},
+"data": "={{\[{ Timestamp:(new Date()).toISOString(), Level:'INFO', Message:'LinkedIn post successful', ContentType:\$json.content\_type, Source:\$json.source, RowOrRecord:\$json.\_rowId, LinkedInURN:\$json.linkedInUrn || '' }]}}"
+},
+"id": "LogSuccess",
+"name": "Log Success (Sheets)",
+"type": "n8n-nodes-base.googleSheets",
+"typeVersion": 4,
+"position": \[
+3450,
+260
+],
+"credentials": {
+"googleSheetsOAuth2Api": {
+"id": "google-sheets-oauth2",
+"name": "Google Sheets OAuth2"
+}
+}
+},
+{
+"parameters": {
+"operation": "post",
+"channel": "={{\$env.ALERT\_SLACK\_CHANNEL || '#alerts'}}",
+"text": "={{'✅ LinkedIn post OK | ' + (\$json.content\_type || 'text') + ' | ' + (\$json.\_rowId || '')}}"
+},
+"id": "SlackSuccess",
+"name": "Slack: Success",
+"type": "n8n-nodes-base.slack",
+"typeVersion": 2,
+"position": \[
+3700,
+260
+],
+"credentials": {
+"slackApi": {
+"id": "slack-api",
+"name": "Slack API"
+}
+}
+},
+{
+"parameters": {},
+"id": "ErrorTrigger",
+"name": "Error Trigger",
+"type": "n8n-nodes-base.errorTrigger",
+"typeVersion": 1,
+"position": \[
+200,
+520
+]
+},
+{
+"parameters": {
+"functionCode": "const err = \$json;\nreturn \[{ json: { timestamp: new Date().toISOString(), level: 'ERROR', message: err.execution?.error?.message || 'Workflow error', stack: err.execution?.error?.stack || '', node: err.execution?.error?.node?.name || '', runId: err.execution?.id || '' } }];"
+},
+"id": "SetError",
+"name": "Set Error Context",
+"type": "n8n-nodes-base.function",
+"typeVersion": 2,
+"position": \[
+450,
+520
+]
+},
+{
+"parameters": {
+"operation": "post",
+"channel": "={{\$env.ALERT\_SLACK\_CHANNEL || '#alerts'}}",
+"text": "={{'🚨 LinkedIn workflow ERROR at ' + \$json.node + ' → ' + \$json.message}}"
+},
+"id": "SlackError",
+"name": "Slack: Error Alert",
+"type": "n8n-nodes-base.slack",
+"typeVersion": 2,
+"position": \[
+700,
+480
+],
+"credentials": {
+"slackApi": {
+"id": "slack-api",
+"name": "Slack API"
+}
+}
+},
+{
+"parameters": {
+"fromEmail": "={{\$env.ALERT\_FROM\_EMAIL}}",
+"toEmail": "={{\$env.ALERT\_TO\_EMAIL}}",
+"subject": "n8n LinkedIn Automation Error",
+"text": "={{'Error at node: ' + \$json.node + '\nMessage: ' + \$json.message + '\nRun ID: ' + \$json.runId}}"
+},
+"id": "EmailError",
+"name": "Email: Error Alert",
+"type": "n8n-nodes-base.emailSend",
+"typeVersion": 2,
+"position": \[
+700,
+560
+],
+"credentials": {
+"smtp": {
+"id": "smtp-alert",
+"name": "SMTP Alert"
+}
+}
+},
+{
+"parameters": {
+"operation": "append",
+"sheetId": "={{\$env.GSHEET\_DOC\_ID}}",
+"range": "={{\$env.GSHEET\_LOG\_RANGE || 'Logs!A\:Z'}}",
+"options": {
+"valueInputMode": "RAW"
+},
+"data": "={{\[{ Timestamp:\$json.timestamp, Level:\$json.level, Message:\$json.message, Node:\$json.node, RunId:\$json.runId }]}}"
+},
+"id": "LogError",
+"name": "Log Error (Sheets)",
+"type": "n8n-nodes-base.googleSheets",
+"typeVersion": 4,
+"position": \[
+950,
+520
+],
+"credentials": {
+"googleSheetsOAuth2Api": {
+"id": "google-sheets-oauth2",
+"name": "Google Sheets OAuth2"
+}
+}
+}
+],
+"connections": {
+"Set Context": {
+"main": \[
+\[
+{
+"node": "Source Switch",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Source Switch": {
+"main": \[
+\[
+{
+"node": "Fetch Sheet Rows",
+"type": "main",
+"index": 0
+}
+],
+\[
+{
+"node": "Fetch Airtable Records",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Cron Trigger (Tue/Thu 9:00 IST)": {
+"main": \[
+\[
+{
+"node": "Set Context",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Fetch Sheet Rows": {
+"main": \[
+\[
+{
+"node": "Normalize Records",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Fetch Airtable Records": {
+"main": \[
+\[
+{
+"node": "Normalize Records",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Normalize Records": {
+"main": \[
+\[
+{
+"node": "Select Next Item",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Select Next Item": {
+"main": \[
+\[
+{
+"node": "Assemble Hashtags",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Assemble Hashtags": {
+"main": \[
+\[
+{
+"node": "Compose Post",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Compose Post": {
+"main": \[
+\[
+{
+"node": "Switch Content Type",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Switch Content Type": {
+"main": \[
+\[
+{
+"node": "Drive: Search Image",
+"type": "main",
+"index": 0
+}
+],
+\[
+{
+"node": "LinkedIn: Post Article",
+"type": "main",
+"index": 0
+}
+],
+\[
+{
+"node": "LinkedIn: Post Text",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Drive: Search Image": {
+"main": \[
+\[
+{
+"node": "Drive: Download Image",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Drive: Download Image": {
+"main": \[
+\[
+{
+"node": "LinkedIn: Post Image",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"LinkedIn: Post Text": {
+"main": \[
+\[
+{
+"node": "Log Success (Sheets)",
+"type": "main",
+"index": 0
+}
+],
+\[
+{
+"node": "Update Source (Sheets)",
+"type": "main",
+"index": 0
+}
+],
+\[
+{
+"node": "Update Source (Airtable)",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"LinkedIn: Post Article": {
+"main": \[
+\[
+{
+"node": "Log Success (Sheets)",
+"type": "main",
+"index": 0
+}
+],
+\[
+{
+"node": "Update Source (Sheets)",
+"type": "main",
+"index": 0
+}
+],
+\[
+{
+"node": "Update Source (Airtable)",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"LinkedIn: Post Image": {
+"main": \[
+\[
+{
+"node": "Log Success (Sheets)",
+"type": "main",
+"index": 0
+}
+],
+\[
+{
+"node": "Update Source (Sheets)",
+"type": "main",
+"index": 0
+}
+],
+\[
+{
+"node": "Update Source (Airtable)",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Log Success (Sheets)": {
+"main": \[
+\[
+{
+"node": "Slack: Success",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Error Trigger": {
+"main": \[
+\[
+{
+"node": "Set Error Context",
+"type": "main",
+"index": 0
+}
+]
+]
+},
+"Set Error Context": {
+"main": \[
+\[
+{
+"node": "Slack: Error Alert",
+"type": "main",
+"index": 0
+}
+],
+\[
+{
+"node": "Email: Error Alert",
+"type": "main",
+"index": 0
+}
+],
+\[
+{
+"node": "Log Error (Sheets)",
+"type": "main",
+"index": 0
+}
+]
+]
+}
+},
+"active": false,
+"settings": {
+"timezone": "Asia/Kolkata",
+"executionOrder": "v1",
+"saveExecutionProgress": true,
+"callerPolicy": "workflowsFromSameOwner"
+},
+"credentials": {
+"googleSheetsOAuth2Api": {
+"id": "google-sheets-oauth2",
+"name": "Google Sheets OAuth2"
+},
+"googleDriveOAuth2Api": {
+"id": "google-drive-oauth2",
+"name": "Google Drive OAuth2"
+},
+"airtableApi": {
+"id": "airtable-api",
+"name": "Airtable API"
+},
+"linkedInOAuth2Api": {
+"id": "linkedin-oauth2",
+"name": "LinkedIn OAuth2"
+},
+"slackApi": {
+"id": "slack-api",
+"name": "Slack API"
+},
+"smtp": {
+"id": "smtp-alert",
+"name": "SMTP Alert"
+}
+},
+"version": 1
+}
